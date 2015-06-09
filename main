@@ -1,0 +1,436 @@
+/*
+ * 
+ * Our app will have one screen with three tabs. The first tab has our FaceBook login button and a map. The first thing the app does
+ * is ask you to login to facebook. Then you will notice that our map has one pinned location already: TwoGrand's HQ is pinned with 
+ * an address (that can be seen if you click on the annotation/pin). If you double click on the map, then it will zoom in. If you long 
+ * click on the screen, then you will place a new pin on the map. The further you are zoomed out, the less accuracy that will be 
+ * applied when you place your pin. These pins/annotations are also clickable, and when you click them you will be able to see
+ * the address and name of the location that you have pinned. Then you will see two more tabs. The middle tab contains all of the pinned
+ * locations that you have on your map inside of a table view. If you click on one of these locations, then you will receive an alert
+ * that tells you the full name and address of the locale. You will also execute the code that determines what our next tab will contain.
+ * Our next tab contains the information of all of the nearby locations to our pin. The locations shown are originally from our 
+ * TwoGrand HQ, but when you click on one of the addresses in the pinned locations table view, then you cause our third tab to display
+ * the nearby locations of the clicked address. 
+ * 
+ */
+
+
+var Map = require('ti.map');
+
+var win = Titanium.UI.createWindow({
+	height : Ti.UI.SIZE,
+	width : Ti.UI.SIZE
+});
+
+var tabGroup = Titanium.UI.createTabGroup();
+
+var tab1 = Titanium.UI.createTab({
+	icon : 'KS_nav_views.png',
+	title : 'Map',
+	window : win
+});
+
+var win3 = Ti.UI.createWindow({
+	title: "Near Locations of Clicked Table Entry",
+	height : Ti.UI.SIZE,
+	width : Ti.UI.SIZE
+});
+
+var tab3 = Ti.UI.createTab({
+	icon : 'KS_nav_views.png',
+	title : 'Nearby Locations',
+	window : win3
+});
+
+/*
+ *
+ my very first creation, how cool right!
+ var listView = Titanium.UI.createView({
+ height: 200,
+ top: 400,
+ width: Ti.UI.SIZE,
+ backbackgroundColor: "yellow"
+ });
+ */
+
+/*
+ Ti.Geolocation.preferredProvider = Titanium.Geolocation.PROVIDER_GPS;
+ Ti.Geolocation.purpose = "testing";
+ Titanium.Geolocation.accuracy = Titanium.Geolocation.ACCURACY_BEST;
+ Titanium.Geolocation.distanceFilter = 10;
+
+ if( Titanium.Geolocation.locationServicesEnabled === false ) {
+ Ti.API.debug('Your device has GPS turned off. Please turn it on.');
+ }
+ */
+
+// this function is executed whenever we require our geolocation services. It checks to make sure you have the proper access codes
+// to execute a geolocation/ map access of the users current location
+function checkGeoPermission() {
+	if (Ti.Geolocation.locationServicesEnabled === false) {
+		showDialog({
+			title : 'Mapping Error',
+			message : 'Your device has geo turned off - turn it on.'
+		});
+	} else {
+		var authorization = Ti.Geolocation.locationServicesAuthorization;
+		if (authorization == Ti.Geolocation.AUTHORIZATION_DENIED) {
+			showDialog({
+				title : 'Mapping Error',
+				message : 'You have disallowed App from running geolocation services.'
+			});
+		} else if (authorization == Ti.Geolocation.AUTHORIZATION_RESTRICTED) {
+			showDialog({
+				title : 'Mapping Error',
+				message : 'Your system has disallowed App from running geolocation services.'
+			});
+		} else {
+			return true;
+		}
+	}
+};
+/*
+var addr;
+
+function address(mylatitude, mylongitude) {
+
+if (checkGeoPermission()) {
+Titanium.Geolocation.reverseGeocoder(mylatitude, mylongitude, function(evt) {
+var places = evt.places;
+var string = JSON.stringify(places).toString();
+var arr = string.split(",");
+var first = arr[3].split(":");
+addr = first[1].substring(1,first[1].length) + "," +  arr[4] + "," + arr[5] + "(" + arr[6] + ")," + arr[7] + "," + arr[8] + "," + "US";
+//Ti.API.info("Inside " + addr);
+//var address = JSON.parse(places);
+//Ti.API.info("Inside " + address);
+//what the stringify returns with places
+//{"street":"Bryant Street","city":"San Francisco","country":"United States of America",
+//"address":"Bryant Street, South of Market, San Francisco, SF, California, 94103, United States of America",
+//"zipcode":"94103","longitude":"-122.4014328","latitude":"37.776919","country_code":"US"}
+
+//return addr;
+});
+};
+};
+*/
+//var addres = address(lat, lon);
+//Ti.API.info("Address " + addr);
+
+// this creates our original annotation of TwoGrand HQ
+var mountainView = Map.createAnnotation({
+	latitude : 37.776880,
+	longitude : -122.400935,
+	title : "TwoGrand Headquarters",
+	subtitle : '739 Bryant Street, San Francisco, CA 94107',
+	pincolor : Map.ANNOTATION_RED,
+	myid : 1 // Custom property to uniquely identify this annotation.
+
+});
+
+//this creates our map view that is centerd around the San Francisco Bay Area and places our first annotation on it. 
+var mapview = Map.createView({
+	top : 45,
+	height : "90%",
+	mapType : Map.NORMAL_TYPE,
+	region : {
+		latitude : 37.776880,
+		longitude : -122.400935,
+		latitudeDelta : 0.3,
+		longitudeDelta : 0.3
+	},
+	animate : true,
+	regionFit : true,
+	userLocation : true,
+	annotations : [mountainView]
+});
+
+// this initializes our Facebook authorization so that a user can log into Facebook, and that we are later able to make a call to 
+// Facebook's Graph API. 
+var fb = require('facebook');
+fb.appid = 466178043501926;
+fb.permissions = ['publish_stream'];
+fb.initialize(1000);
+fb.authorize();
+
+// Add the Facebook login button.  Note that it doesn't need a click event listener.
+win.add(fb.createLoginButton({
+	readPermissions : ['read_stream', 'email'],
+	top : 0,
+}));
+
+//this is the data that will be sent along with our requestWithGraphPath in order to get our nearby locations to our pinned lat - long
+//coordinates
+var data = {
+	type : "place",
+	center : "37.76,-122.427",
+	distance : 100
+};
+
+var originalArray;
+var tableOfNearby = [];
+
+//search?q={query}&type=place&center={lat},{lng}&distance={distance}
+/*
+ * Had some difficulty parsing what our requestWithGraphPath returned us, so instead I create a long string out of our returned data
+ * from the search of locations, and then cut the string up in order to get the values that we wanted. For this method we 
+ * cut the string into each of the nearby locations to our first pinned location. 
+ */
+
+fb.requestWithGraphPath('search', data, 'GET', function(e) {
+	if (e.success) {
+		var data = JSON.parse(e.result).data;
+	
+		data.forEach(function(place) {
+    		//Ti.API.info(place.name);
+    		//Ti.API.info(place.location.longitude);
+    		
+    		var row = Ti.UI.createTableViewRow({
+				className : 'nearby',
+			});
+			var need = Ti.UI.createLabel({
+				text : place.name
+			});
+			row.add(need);
+			tableOfNearby.push(row);
+  		});
+		
+		tableReady = Ti.UI.createTableView({
+			data : tableOfNearby
+		});
+		//Ti.API.info(tableOfNearby);
+		win3.add(tableReady);
+	} else {
+		alert("failure - e: " + JSON.stringify(e.error));
+	};
+});
+
+/*
+ *
+ *
+ tableOfNearby = Ti.UI.createTableView({
+ data : originalArray
+ });
+ win3.add(tableOfNearby);
+ *
+ *
+
+ fb.addEventListener('login', function(e) {
+ if (e.success) {
+ alert('Logged in');
+ }
+ });
+ fb.addEventListener('logout', function(e) {
+ alert('Logged out');
+ });
+
+ if (Ti.Platform.name === 'android') {
+ win.fbProxy = fb.createActivityWorker({lifecycleContainer: win});
+ }*/
+
+
+
+win.add(mapview);
+
+
+/*
+* The Facebook module needs to hook into the lifecycle events of the current active activity in order to synchronize its
+* state between various activities in the application, for example, to update the label of the Login button when the user
+* logs in or out of Facebook.
+
+Attach the proxy to the Window or TabGroup object, so it does not get garbage collected.
+*/
+//win.fbProxy = fb.createActivityWorker({lifecycleContainer: win});
+
+var win2 = Titanium.UI.createWindow({
+	title : 'Pinned Locations',
+	backgroundColor : '#fff'
+});
+var tab2 = Titanium.UI.createTab({
+	icon : 'KS_nav_ui.png',
+	title : 'Pinned Locations',
+	window : win2
+});
+
+
+// this gives us the lat - long coordinates from a set of pixels on the map, which gets determined by our long onClickListener. 
+var calculateLatLngfromPixels = function(mapview, xPixels, yPixels) {
+
+	var region = mapview.actualRegion || mapview.region;
+	var widthInPixels = mapview.rect.width;
+	var heightInPixels = mapview.rect.height;
+
+	// should invert because of the pixel reference frame
+	heightDegPerPixel = -region.latitudeDelta / heightInPixels;
+	widthDegPerPixel = region.longitudeDelta / widthInPixels;
+
+	return {
+		lat : (yPixels - heightInPixels / 2) * heightDegPerPixel + region.latitude,
+		lon : (xPixels - widthInPixels / 2) * widthDegPerPixel + region.longitude
+
+	};
+};
+
+//this is what our pinned locations table view is originally set to. later we add the name of the locations that get longclicked on 
+//the map
+var tableOfPinned = [{
+	title : 'TwoGrand HQ'
+}];
+
+var table = Ti.UI.createTableView({
+	data : tableOfPinned
+});
+win2.add(table);
+
+var addr;
+
+//this method returns from a long click both a created annotation and a create table row element for our pinned locations table in 
+//the second tab. Again, had trouble parsing a JSON object, so instead I made it into a string and altered it until we got the 
+//necessary address values. 
+
+win.addEventListener('longpress', function(e) {
+	var coordinate = calculateLatLngfromPixels(mapview, e.x, e.y);
+	var longitude = coordinate.lon;
+	var latitude = coordinate.lat;
+	//alert("Latitude is: " + latitude + " Longitude is: " + longitude);
+	if (checkGeoPermission()) {
+		Titanium.Geolocation.reverseGeocoder(latitude, longitude, function(evt) {
+			var places = evt.places;
+			var string = JSON.stringify(places[0]).toString();
+			var arr = string.split(",");
+			Ti.API.info("hello" + string);			
+			Ti.API.info("length " + places.length);
+			Ti.API.info("country " + places[0].country);
+			Ti.API.info("longitude " + places[0].longitude);
+			
+			
+			
+			
+			var first = arr[3].split(":");
+			if (arr.length == 10) {
+				addr = first[1].substring(1, first[1].length) + "," + arr[4] + "," + arr[5].substring(0, arr[5].length - 1);
+				var top = first[1].substring(1, first[1].length);
+				var bot = arr[4] + "," + arr[5].substring(0, arr[5].length - 1);
+			}
+			if (arr.length == 11) {
+				addr = first[1].substring(1, first[1].length) + "," + arr[4] + "," + arr[5] + "," + arr[6].substring(0, arr[6].length - 1);
+				var top = first[1].substring(1, first[1].length);
+				var bot = arr[4] + "," + arr[5] + "," + arr[6].substring(0, arr[6].length - 1);
+			}
+			if (arr.length == 12) {
+				addr = first[1].substring(1, first[1].length) + "," + arr[4] + "," + arr[5] + "," + arr[6] + "," + arr[7].substring(0, arr[7].length - 1);
+				var top = first[1].substring(1, first[1].length);
+				var bot = arr[4] + "," + arr[5] + "," + arr[6] + "," + arr[7].substring(0, arr[7].length - 1);
+			}
+			if (arr.length == 13) {
+				addr = first[1].substring(1, first[1].length) + "," + arr[4] + "," + arr[5] + "," + arr[6] + "," + arr[7] + "," + arr[8].substring(0, arr[8].length - 1);
+				var top = first[1].substring(1, first[1].length);
+				var bot = arr[4] + "," + arr[5] + "," + arr[6] + "," + arr[7] + "," + arr[8].substring(0, arr[8].length - 1);
+			}
+			if (arr.length == 14) {
+				addr = first[1].substring(1, first[1].length) + "," + arr[4] + "," + arr[5] + "," + arr[6] + "," + arr[7] + "," + arr[8] + "," + arr[9].substring(0, arr[9].length - 1);
+				var top = first[1].substring(1, first[1].length) + "," + arr[4];
+				var bot = arr[5] + "," + arr[6] + "," + arr[7] + "," + arr[8] + "," + arr[9].substring(0, arr[9].length - 1);
+			}
+			if (arr.length == 15) {
+				addr = first[1].substring(1, first[1].length) + arr[4] + "," + arr[5] + "," + arr[6] + "," + arr[7] + "," + arr[8] + "," + arr[9] + "," + arr[10].substring(0, arr[10].length - 1);
+				var top = first[1].substring(1, first[1].length) + "," + arr[4];
+				var bot = arr[5] + "," + arr[6] + "," + arr[7] + "," + arr[8] + "," + arr[9] + "," + arr[10].substring(0, arr[10].length - 1);
+			}
+			if (arr.length == 16) {
+				addr = first[1].substring(1, first[1].length) + "," + arr[4] + "," + arr[5] + "," + arr[6] + "," + arr[7] + "," + arr[8] + +"," + arr[9] + "," + arr[10] + "," + arr[11].substring(0, arr[11].length - 1);
+				var top = first[1].substring(1, first[1].length);
+				var bot = arr[4] + "," + arr[5] + "," + arr[6] + "," + arr[7] + "," + arr[8] + +"," + arr[9] + "," + arr[10] + "," + arr[11].substring(0, arr[11].length - 1);
+			}
+			Ti.API.info(addr);
+			//Ti.API.info(arr.length);
+			//alert(addr);
+			var row = Ti.UI.createTableViewRow({
+				"title" : addr,
+				height : "auto"
+			});
+			table.appendRow(row);
+			var newAnn = Map.createAnnotation({
+				latitude : latitude,
+				longitude : longitude,
+				title : top,
+				subtitle : bot,
+				pincolor : Map.ANNOTATION_RED
+			});
+			mapview.addAnnotation(newAnn);
+		});
+	};
+
+});
+
+
+/*
+ * This is similar to our first requestWithGraphPath except that we are getting the nearby locations to the lat-long coordinates
+ * of the location that gets clicked from our pinned locations tab.  
+ */
+table.addEventListener('click', function(e) {
+	var tableOfNearby = [];
+	var newArray = [];
+	var coordinate = calculateLatLngfromPixels(mapview, e.x, e.y);
+	var lat = coordinate.lat;
+	var lon = coordinate.lon;
+	alert("You clicked the address: " + addr);
+	var centerText = "" + lat + ","+ lon;
+	Ti.API.info(centerText);
+	var data = {type : "place", center : centerText ,distance : 100};
+	fb.requestWithGraphPath('search', data, 'GET', function(e) {
+	//var string = Ti.API.info(JSON.stringify(e)).toString();
+	//Ti.API.info(string.split(","));
+	if (e.success) {
+		//alert("success - e: " + JSON.stringify(e));
+		var array = JSON.stringify(e).toString().split(",");
+		//Ti.API.info("Array is " + array);
+		originalArray = [];
+		var i = 0;
+		while (array[i] != null) {
+			if (array[i].indexOf("name") > -1) {
+				var name = array[i].substring(11, array[i].length - 2);
+				if (name.indexOf("\\") == -1) {
+					newArray.push(name);
+				}
+			}
+			i++;
+		}
+		//Ti.API.info(originalArray);
+		for (var i = 0; i < newArray.length; i++) {
+			//Ti.API.info("this is one " + originalArray[i]);
+			var row = Ti.UI.createTableViewRow({
+				className : 'nearby',
+			});
+			var need = Ti.UI.createLabel({
+				text : newArray[i]
+			});
+			row.add(need);
+			tableOfNearby.push(row);
+		}
+		tableReady = Ti.UI.createTableView({
+			data : tableOfNearby
+		});
+		//Ti.API.info(tableOfNearby);
+		win3.add(tableReady);
+	} else {
+		alert("failure - e: " + JSON.stringify(e));
+	};
+});
+});
+
+Ti.UI.backgroundColor = 'white';
+var win = Ti.UI.createWindow();
+
+/*
+ tab2.addEventListener('click', function(e){
+ alert("Long click to place a pin - the pin will be added to our 'Pinned Locations' tab");
+ });
+ */
+
+tabGroup.addTab(tab1);
+tabGroup.addTab(tab2);
+tabGroup.addTab(tab3);
+
+tabGroup.open();
+
